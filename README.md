@@ -46,8 +46,7 @@ In order to be eligible for a reward, bug reports must include an explanation of
 
 https://azuro-protocol.notion.site/Azuro-V1-6c8a1604d9934e28972aa781526f9a0e
 
-## Docs
-**Security Analysis**
+## Security Analysis
 [Security Analysis by Pessimistic](./Azuro%20Security%20Analysis%20by%20Pessimistic%20(3).pdf)
 
 ## Liquidity Tree Details
