@@ -72,13 +72,26 @@ fill up networks keys you are going to use:
 - **MAINNET_PRIVATE_KEY=**
 - **BSC_PRIVATE_KEY=**
 - **ETHERSCAN_API_KEY=** for contract verification
+- **TEST_WALLET1=** any wallet to get test usdt
+- **TEST_WALLET2=** any wallet to get test usdt
+- **TEST_WALLET3=** any wallet to get test usdt
 
 ## testnet deploy
 
 run script `deploy-rinkeby`
 returned result will contain smartcontract addresses:
-- **usdt deployed to** - usdt mock token address
-- **Math deployed to** - Math library address
-- **azurobet deployed to** - azurobet - (nft) token address
-- **lp deployed to** - lp smartcontract address
-- **core deployed to** - core smartcontract address
+- **NEXT_PUBLIC_CORE** - core smartcontract address
+- **NEXT_PUBLIC_LP** - lp smartcontract address
+- **NEXT_PUBLIC_AZURO_BET** - azurobet - (nft) token address
+- **NEXT_PUBLIC_USDT** - usdt mock token address
+
+# Rinkeby latest addresses:
+```
+CORE: 0x7ce09c4401694F80b4352407A2df59A2D339C32A
+
+LP: 0x31acF17c04f27Bb7DE1cf2fDfa8785950A05b80A
+
+AZURO_BET: 0x8ca27099AD224984e90Fd95D8de30D7B1cF523eb
+
+TEST_USDT: 0xb64a99A6A34A719B323655CeE9FC0D3f61b5D7Ef
+```
