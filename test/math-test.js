@@ -1,57 +1,37 @@
 const { expect, assert } = require("chai");
 const { constants, utils, BigNumber } = require("ethers");
 const { ethers, network } = require("hardhat");
-const { getRandomConditionId, prepareStand, tokens } = require("../utils/utils");
+const {
+  getRandomConditionId,
+  prepareStand,
+  tokens,
+  getBlockTime,
+  createCondition,
+  makeBetGetTokenId,
+  timeShiftBy,
+} = require("../utils/utils");
 const dbg = require("debug")("test:math");
 
 const OUTCOMEWIN_INDEX = 0;
-const LIQUIDITY = tokens(2000000);
+const OUTCOMEWIN = 0;
+const OUTCOMELOSS = 1;
+const ONE_WEEK = 604800;
+const LIQUIDITY = tokens(1000);
 
 describe("Math test", function () {
   let owner, adr1, lpOwner, oracle, oracle2, maintainer;
-  let Core, core, Usdt, usdt, LP, lp;
+  let Core, core, Usdt, wxDAI, LP, lp;
 
-  const reinforcement = tokens(20000); // 10%
+  const reinforcement = tokens(200); // 10%
   const marginality = 50000000; // 5%
 
-  const pool1 = 5000000;
-  const pool2 = 5000000;
+  const odds1 = 5000000;
+  const odds2 = 5000000;
 
   before(async () => {
     [owner, adr1, lpOwner, oracle, oracle2, maintainer] = await ethers.getSigners();
-    /* Core   = await ethers.getContractFactory("Core")
-    core = await upgrades.deployProxy(Core, [0.1*10^9, oracle.address, 0.05*10^9]) */
 
-    /* // test USDT
-    Usdt = await ethers.getContractFactory("TestERC20");
-    usdt = await Usdt.deploy();
-    dbg("usdt deployed to:", usdt.address);
-    const mintableAmount = constants.WeiPerEther.mul(8000000);
-    await usdt.deployed();
-    await usdt.mint(owner.address, mintableAmount);
-    await usdt.mint(adr1.address, mintableAmount);
-
-    // nft
-    AzuroBet = await ethers.getContractFactory("AzuroBet");
-    azurobet = await upgrades.deployProxy(AzuroBet);
-    dbg("azurobet deployed to:", azurobet.address);
-    await azurobet.deployed();
-    dbg(await azurobet.owner(), "-----1", owner.address);
-
-    // lp
-    LP = await ethers.getContractFactory("LP");
-    lp = await upgrades.deployProxy(LP, [usdt.address, azurobet.address, ONE_WEEK]);
-    dbg("lp deployed to:", lp.address);
-    await lp.deployed();
-    dbg(await lp.owner(), "-----2", owner.address);
-    await azurobet.setLp(lp.address);
-
-    Core = await ethers.getContractFactory("Core");
-    core = await upgrades.deployProxy(Core, [reinforcement, oracle.address, marginality]);
-    dbg("core deployed to:", core.address);
-    await core.deployed(); */
-
-    [core, core2, usdt, lp] = await prepareStand(
+    [core, core2, wxDAI, lp] = await prepareStand(
       ethers,
       owner,
       adr1,
@@ -63,14 +43,12 @@ describe("Math test", function () {
       LIQUIDITY
     );
 
-    //dbg('balanceOf', await core.connect(adr1).balanceOf(0, owner));
-
     // setting up
     await core.connect(owner).setLp(lp.address);
     await lp.changeCore(core.address);
     const approveAmount = constants.WeiPerEther.mul(9999999);
 
-    await usdt.approve(lp.address, approveAmount);
+    await wxDAI.approve(lp.address, approveAmount);
     dbg("Approve done ", approveAmount);
 
     const liquidity = constants.WeiPerEther.mul(2000000);
@@ -101,7 +79,7 @@ describe("Math test", function () {
       1730000000,
       3000000000
     );
-    expect(a).to.equal(2787053105);
+    expect(a).to.equal(2786938440);
 
     a = await core.getOddsFromBanks(50000000, 50000000, 100000, OUTCOMEWIN_INDEX, 50000000, 1e9);
     dbg(
@@ -111,7 +89,7 @@ describe("Math test", function () {
       50000000,
       50000000
     );
-    expect(a).to.equal(1904761904);
+    expect(a).to.equal(1902955904);
 
     a = await core.getOddsFromBanks(50000000, 50000000, 25000000, OUTCOMEWIN_INDEX, 50000000, 1e9);
     dbg(
@@ -121,6 +99,32 @@ describe("Math test", function () {
       50000000,
       50000000
     );
-    expect(a).to.equal(1610952313);
+    expect(a).to.equal(1600666871);
+  });
+
+  it("Make large bet", async function () {
+    time = await getBlockTime(ethers);
+
+    let condIDHash = await createCondition(
+      core,
+      oracle,
+      0, //condID,
+      0, //SCOPE_ID,
+      [odds2, odds1],
+      [OUTCOMEWIN, OUTCOMELOSS],
+      time + ONE_WEEK,
+      "ipfs"
+    );
+
+    for (const iterator of Array(1000).keys()) {
+      await makeBetGetTokenId(lp, adr1, condIDHash, tokens(1), OUTCOMEWIN, time + 10000, 0);
+      await makeBetGetTokenId(lp, adr1, condIDHash, tokens(1), OUTCOMELOSS, time + 10000, 0);
+    }
+
+    let tokenId = await makeBetGetTokenId(lp, adr1, condIDHash, tokens(500), OUTCOMEWIN, time + 10000, 0);
+
+    await timeShiftBy(ethers, ONE_WEEK);
+    await core.connect(oracle).resolveCondition(0, OUTCOMEWIN);
+    //console.log(await makeWithdrawPayout(lp, adr1, tokenId));
   });
 });

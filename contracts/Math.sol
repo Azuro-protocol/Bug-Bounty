@@ -55,20 +55,13 @@ contract Math {
         uint256 margin,
         uint256 multiplier
     ) internal pure returns (uint256) {
-        uint256 pe1 = ((fund1Bank + amount) * multiplier) /
-            (fund1Bank + fund2Bank + amount);
-        uint256 ps1 = (fund1Bank * multiplier) / (fund1Bank + fund2Bank);
-        uint256 cAmount = ceil(
-            ((amount * multiplier) / (fund1Bank / 100)),
-            multiplier
-        ) / multiplier; // step
-        if (cAmount == 1) {
-            return
-                marginAdjustedOdds((multiplier**2) / ps1, margin, multiplier);
-        }
-        uint256 odds = (multiplier**3) /
-            (((pe1 * cAmount + ps1 * 2 - pe1 * 2) * multiplier) / cAmount);
-        return marginAdjustedOdds(odds, margin, multiplier);
+        return
+            marginAdjustedOdds(
+                (multiplier * (fund1Bank + fund2Bank + amount)) /
+                    (fund1Bank + amount),
+                margin,
+                multiplier
+            );
     }
 
     /**
@@ -112,9 +105,9 @@ contract Math {
             marginality +
             multiplier *
             marginality) / multiplier;
-        uint256 c = (2 * multiplier - (multiplier + marginality));
         newOdds =
-            ((sqrt(b**2 + 4 * a * c) - b) * multiplier) /
+            ((sqrt(b**2 + 4 * a * (multiplier - marginality)) - b) *
+                multiplier) /
             (2 * a) +
             multiplier;
         return newOdds;

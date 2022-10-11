@@ -4,10 +4,11 @@ const { ethers, network } = require("hardhat");
 const {
   getBlockTime,
   timeShift,
+  timeShiftBy,
   tokens,
   getTokenId,
   getTokenIdOdds,
-  getConditioIdHash,
+  getConditionIdHash,
   prepareStand,
 } = require("../utils/utils");
 const dbg = require("debug")("test:extension");
@@ -16,13 +17,15 @@ const ONE_WEEK = 604800;
 const SCOPE_ID = 1;
 const OUTCOMEWIN = 1;
 const OUTCOMELOSE = 2;
+const ONE_HOUR = 3600;
+const ONE_MINUTE = 60;
 const LIQUIDITY = tokens(2000000);
 const reinforcement = constants.WeiPerEther.mul(20000); // 10%
 const marginality = 50000000; // 5%
 
 describe("Extension test", function () {
   let owner, adr1, lpOwner, oracle, oracle2, maintainer;
-  let Core, core, Usdt, usdt, LP, lp;
+  let Core, core, Usdt, wxDAI, LP, lp;
   let now;
 
   const reinforcement = constants.WeiPerEther.mul(20000); // 10%
@@ -36,7 +39,7 @@ describe("Extension test", function () {
 
     now = (await getBlockTime(ethers)) + 30000;
 
-    [core, core2, usdt, lp] = await prepareStand(
+    [core, core2, wxDAI, lp] = await prepareStand(
       ethers,
       owner,
       adr1,
@@ -47,7 +50,7 @@ describe("Extension test", function () {
       marginality,
       LIQUIDITY
     );
-    await usdt.mint(owner.address, tokens(500_000_000_000));
+    await owner.sendTransaction({ to: wxDAI.address, value: BigNumber.from(tokens(500_000_000)) });
   });
 
   it("Should go through betting workflow with 2 users with slippage", async function () {
@@ -69,7 +72,7 @@ describe("Extension test", function () {
         ethers.utils.formatBytes32String("ipfs")
       );
     dbg("Condition created", condID);
-    let condIDHash = await getConditioIdHash(txCreate);
+    let condIDHash = await getConditionIdHash(txCreate);
 
     let approveAmount = tokens("9999999");
 
@@ -80,7 +83,7 @@ describe("Extension test", function () {
     let minrate = 1000000000;
 
     // first player put the bet
-    await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+    await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
     dbg("LP approved");
 
     let txBet1 = await lp.bet(
@@ -109,17 +112,17 @@ describe("Extension test", function () {
     );
 
     //  EVENT: second player put the bet
-    await usdt.connect(adr1).approve(lp.address, approveAmount);
+    await wxDAI.connect(adr1).approve(lp.address, approveAmount);
     let txBet2 = await lp.connect(adr1).bet(condIDHash, betAmount2, outcomeLose, deadline, minrate);
     let tokenId2 = await getTokenId(txBet2);
 
     now += 36001;
-    await timeShift(now);
+    await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
     // resolve condition by oracle
     await core.connect(oracle).resolveCondition(condID, outcomeWin);
 
     //  EVENT: first player get his payout
-    const better1OldBalance = await usdt.balanceOf(owner.address);
+    const better1OldBalance = await wxDAI.balanceOf(owner.address);
     await azurobet.setApprovalForAll(lp.address, true);
 
     // try to withdraw stake #1 (adr1 hold it now)
@@ -130,7 +133,7 @@ describe("Extension test", function () {
 
     // try to withdraw stake #1 from owner - must be ok
     await lp.withdrawPayout(tokenId1);
-    const better1NewBalance = await usdt.balanceOf(owner.address);
+    const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
     dbg(
       "NFT balance after withdraw==================>",
@@ -168,17 +171,17 @@ describe("Extension test", function () {
         now + 3600,
         ethers.utils.formatBytes32String("ipfs")
       );
-    let condIDHash = await getConditioIdHash(txCreate);
+    let condIDHash = await getConditionIdHash(txCreate);
 
     let approveAmount = tokens("9999999");
 
-    await timeShift(now);
+    await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
 
     let deadline = now + 10;
     let minrate = 1000000000;
 
     // first player put the bet
-    await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+    await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
     let txBet1 = await lp.bet(
       condIDHash, // event
@@ -193,22 +196,22 @@ describe("Extension test", function () {
     let rate1 = _res.odds;
 
     //  EVENT: second player put the bet
-    await usdt.connect(adr1).approve(lp.address, approveAmount);
+    await wxDAI.connect(adr1).approve(lp.address, approveAmount);
     let txBet2 = await lp.connect(adr1).bet(condIDHash, betAmount2, OUTCOMELOSE, deadline, minrate);
     let tokenId2 = await getTokenId(txBet2);
 
     now += 3601;
-    await timeShift(now);
+    await timeShift(now + ONE_MINUTE);
     // resolve condition by oracle
     await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
 
     //  EVENT: first player get his payout
-    const better1OldBalance = await usdt.balanceOf(owner.address);
+    const better1OldBalance = await wxDAI.balanceOf(owner.address);
     await azurobet.setApprovalForAll(lp.address, true);
 
     // try to withdraw stake #1 from owner - must be ok
     await lp.withdrawPayout(tokenId1);
-    const better1NewBalance = await usdt.balanceOf(owner.address);
+    const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
     dbg(
       "NFT balance after withdraw==================>",
@@ -238,7 +241,7 @@ describe("Extension test", function () {
     let deadline = now + 999999999;
 
     beforeEach(async () => {
-      now = now + 9600;
+      now = now + ONE_HOUR;
       deadline = now + 999999999;
       conditionA++;
       let txCreateA = await core
@@ -251,7 +254,7 @@ describe("Extension test", function () {
           now,
           ethers.utils.formatBytes32String("ipfs")
         );
-      conditionAHash = await getConditioIdHash(txCreateA);
+      conditionAHash = await getConditionIdHash(txCreateA);
 
       conditionB++;
       let txCreateB = await core
@@ -264,7 +267,7 @@ describe("Extension test", function () {
           now,
           ethers.utils.formatBytes32String("ipfs")
         );
-      conditionBHash = await getConditioIdHash(txCreateB);
+      conditionBHash = await getConditionIdHash(txCreateB);
 
       conditionC++;
       let txCreateC = await core
@@ -277,14 +280,14 @@ describe("Extension test", function () {
           now,
           ethers.utils.formatBytes32String("ipfs")
         );
-      conditionCHash = await getConditioIdHash(txCreateC);
+      conditionCHash = await getConditionIdHash(txCreateC);
     });
     it("Should register bet with no slippage with bet 1/100", async function () {
       let betAmount = tokens("1");
       let betAmount2 = tokens("99");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionAHash, // event
@@ -299,7 +302,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("19.282000541");
+      expect(utils.formatUnits(rate1, 9)).to.equal("19.275329236");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -314,19 +317,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET A = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.001886686");
-      await network.provider.send("evm_setNextBlockTimestamp", [now]);
-      await network.provider.send("evm_mine");
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.001868625");
+
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionA, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -338,7 +341,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("200");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionBHash, // event
@@ -354,7 +357,7 @@ describe("Extension test", function () {
 
       dbg("BET ID A = ", tokenId1);
       dbg("RATE BET A = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.904761904");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.887012779");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -369,19 +372,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET  = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.93354474");
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.920769338");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionB, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -393,7 +396,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("4");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionCHash, // event
@@ -408,7 +411,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.001865319");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.001847473");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -423,19 +426,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET A = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("19.281014074");
-      //now += 4000
-      await timeShift(now);
+      expect(utils.formatUnits(rate2, 9)).to.equal("19.263247242");
+
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionC, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -448,7 +451,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("990");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionAHash, // event
@@ -463,7 +466,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("19.241636897");
+      expect(utils.formatUnits(rate1, 9)).to.equal("19.214254267");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -478,18 +481,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.001959151");
-      await timeShift(now);
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.001897212");
+
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionA, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -501,7 +505,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("500");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionBHash, // event
@@ -516,7 +520,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.878644185");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.861626715");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -531,19 +535,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET  = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.960357746");
-      //now += 4000
-      await timeShift(now);
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.943431028");
+
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionB, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -555,7 +559,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("10");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionCHash, // event
@@ -570,7 +574,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.001751678");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.001696088");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -585,19 +589,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("19.314580941");
-      //now += 4000
-      await timeShift(now);
+      expect(utils.formatUnits(rate2, 9)).to.equal("19.293351818");
+
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionC, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -610,7 +614,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("19800");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionAHash, // event
@@ -625,7 +629,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("17.661824031");
+      expect(utils.formatUnits(rate1, 9)).to.equal("17.624531243");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -640,19 +644,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.002292147");
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.002207622");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionA, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -664,7 +668,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("10000");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionBHash, // event
@@ -679,7 +683,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.453749596");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.446763275");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -694,19 +698,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET  = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("2.179668163");
+      expect(utils.formatUnits(rate2, 9)).to.equal("2.16313218");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionB, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -718,7 +722,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("200");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionCHash, // event
@@ -733,7 +737,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.000498887");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.000479797");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -748,19 +752,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("19.32694078");
+      expect(utils.formatUnits(rate2, 9)).to.equal("19.313355141");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionC, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -773,7 +777,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("100000");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionAHash, // event
@@ -788,7 +792,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("11.506500724");
+      expect(utils.formatUnits(rate1, 9)).to.equal("11.483716596");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -803,18 +807,18 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("1.002265159");
-      await timeShift(now);
+      expect(utils.formatUnits(rate2, 9)).to.equal("1.00218867");
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionA, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -826,7 +830,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("50000");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionBHash, // event
@@ -841,7 +845,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9)); // todo hardcode check
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.137756248");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.135938264");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -856,19 +860,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET  = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("2.02384949");
+      expect(utils.formatUnits(rate2, 9)).to.equal("2.019979863");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionB, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -880,7 +884,7 @@ describe("Extension test", function () {
       let betAmount2 = tokens("1000");
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         conditionCHash, // event
@@ -895,7 +899,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.000055007");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.000052895");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -910,19 +914,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("19.303351879");
+      expect(utils.formatUnits(rate2, 9)).to.equal("19.298853711");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(conditionC, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -935,7 +939,7 @@ describe("Extension test", function () {
 
       // first player put the bet
       let condID = 21312435323;
-      now += 3600;
+      now = (await getBlockTime(ethers)) + ONE_HOUR;
       let txCreate = await core
         .connect(oracle)
         .createCondition(
@@ -947,9 +951,9 @@ describe("Extension test", function () {
           ethers.utils.formatBytes32String("ipfs")
         );
 
-      let condIDHash = await getConditioIdHash(txCreate);
+      let condIDHash = await getConditionIdHash(txCreate);
 
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       let txBet1 = await lp.bet(
         condIDHash, // event
@@ -964,7 +968,7 @@ describe("Extension test", function () {
       let rate1 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate1, 9));
-      expect(utils.formatUnits(rate1, 9)).to.equal("1.517945827");
+      expect(utils.formatUnits(rate1, 9)).to.equal("1.515853055");
 
       // bet 2
       let txBet2 = await lp.bet(
@@ -979,19 +983,19 @@ describe("Extension test", function () {
       let rate2 = _res.odds;
 
       dbg("RATE BET = ", utils.formatUnits(rate2, 9));
-      expect(utils.formatUnits(rate2, 9)).to.equal("2.567481832");
+      expect(utils.formatUnits(rate2, 9)).to.equal("2.557094313");
 
-      await timeShift(now);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       // resolve condition by oracle
       await core.connect(oracle).resolveCondition(condID, 1);
 
       //  EVENT: first player get his payout
-      const better1OldBalance = await usdt.balanceOf(owner.address);
+      const better1OldBalance = await wxDAI.balanceOf(owner.address);
       await azurobet.setApprovalForAll(lp.address, true);
 
       // try to withdraw stake #1 from owner - must be ok
       await lp.withdrawPayout(tokenId1);
-      const better1NewBalance = await usdt.balanceOf(owner.address);
+      const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
       let better1OldBalance_plus_calculation = better1OldBalance
         .add(BigNumber.from(rate1).mul(BigNumber.from(betAmount).div(BigNumber.from(1000000000))))
@@ -1003,7 +1007,7 @@ describe("Extension test", function () {
       let betAmount = 2;
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       await expect(
         lp.bet(
@@ -1021,7 +1025,7 @@ describe("Extension test", function () {
       minrate = 19251636897; // bet will be accepted with 19.241636897 current odds is 19,2820
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       await expect(
         lp.bet(
@@ -1039,7 +1043,7 @@ describe("Extension test", function () {
       minrate = 0;
 
       // first player put the bet
-      await usdt.approve(lp.address, approveAmount); // approve usdt for the contract LP
+      await wxDAI.approve(lp.address, approveAmount); // approve wxDAI for the contract LP
 
       await expect(
         lp.bet(

@@ -1,7 +1,7 @@
 const { expect, assert } = require("chai");
 const { constants, utils, BigNumber } = require("ethers");
 const { ethers, network } = require("hardhat");
-const { getBlockTime, tokens, prepareStand, getConditioIdHash } = require("../utils/utils");
+const { getBlockTime, tokens, prepareStand, getConditionIdHash } = require("../utils/utils");
 const dbg = require("debug")("test:reinforcement");
 
 const SCOPE_ID = 1;
@@ -23,7 +23,7 @@ describe("Reinforcement test", function () {
 
     now = await getBlockTime(ethers);
 
-    [core, core2, usdt, lp] = await prepareStand(
+    [core, core2, wxDAI, lp] = await prepareStand(
       ethers,
       owner,
       adr1,
@@ -50,7 +50,7 @@ describe("Reinforcement test", function () {
           now + 3600,
           ethers.utils.formatBytes32String("ipfs")
         );
-      let condIDHash = await getConditioIdHash(txCreate);
+      let condIDHash = await getConditionIdHash(txCreate);
       let condition = await core.getCondition(condIDHash);
       expect(condition.fundBank[0]).to.equal(fund1Should);
     }
@@ -60,6 +60,33 @@ describe("Reinforcement test", function () {
         .connect(oracle)
         .createCondition(
           condID2,
+          SCOPE_ID,
+          [pool2, pool1],
+          [OUTCOMEWIN, OUTCOMELOSE],
+          now + 3600,
+          ethers.utils.formatBytes32String("ipfs")
+        )
+    ).to.be.revertedWith("NotEnoughLiquidity");
+
+    // change reinforcement ability from 50% to 51% will allow for 1 condition creation
+    await lp.changeReinforcementAbility("510000000"); // 51%
+    await core
+      .connect(oracle)
+      .createCondition(
+        condID2,
+        SCOPE_ID,
+        [pool2, pool1],
+        [OUTCOMEWIN, OUTCOMELOSE],
+        now + 3600,
+        ethers.utils.formatBytes32String("ipfs")
+      );
+
+    // new condition is not fit for reinforcement ability condition
+    await expect(
+      core
+        .connect(oracle)
+        .createCondition(
+          ++condID2,
           SCOPE_ID,
           [pool2, pool1],
           [OUTCOMEWIN, OUTCOMELOSE],

@@ -14,14 +14,11 @@ contract Core is OwnableUpgradeable, ICore, Math {
     uint128 public defaultReinforcement;
     uint128 public defaultMargin;
 
-    // total payout's locked value - sum of maximum payouts of all execution Condition.
-    // on each Condition at betting calculate sum of maximum payouts and put it here
-    // after Condition finished on each user payout decrease its value
-    uint128 public totalLockedPayout;
+    uint128 private _deprecatedStorageVar;
     uint128 public multiplier;
 
     uint64 public maxBanksRatio;
-    bool public allConditionStopped;
+    bool public allConditionsStopped;
 
     mapping(uint64 => uint128) reinforcements; // outcomeId -> reinforcement
     mapping(uint64 => uint128) margins; // outcomeId -> margin
@@ -35,12 +32,9 @@ contract Core is OwnableUpgradeable, ICore, Math {
     // oracle-oracleCondId-conditionId
     mapping(address => mapping(uint256 => uint256)) public oracleConditionIds;
 
-    // Some condition stop receive bets
-    mapping(uint256 => bool) stoppedCondition;
-
     ILP public LP;
 
-    // All condition stopped receive bets
+    uint64 public override activeConditions;
 
     /**
      * @notice Only permits calls by oracles.
@@ -66,16 +60,6 @@ contract Core is OwnableUpgradeable, ICore, Math {
         _;
     }
 
-    /**
-     * @notice Only permits calls if condition `conditionId` is not stopped.
-     * @param  conditionId ID of condition
-     */
-    modifier betAllowed(uint256 conditionId) {
-        if (allConditionStopped || stoppedCondition[conditionId])
-            revert ConditionStopped_();
-        _;
-    }
-
     function initialize(
         uint128 reinforcement,
         address oracle,
@@ -87,13 +71,6 @@ contract Core is OwnableUpgradeable, ICore, Math {
         defaultMargin = margin;
         maxBanksRatio = 10000;
         multiplier = 10**9;
-    }
-
-    /**
-     * @notice Get total amount of locked payouts.
-     */
-    function getLockedPayout() external view override returns (uint256) {
-        return totalLockedPayout;
     }
 
     /**
@@ -121,6 +98,7 @@ contract Core is OwnableUpgradeable, ICore, Math {
         if (!LP.getPossibilityOfReinforcement(getReinforcement(outcomes[0])))
             revert NotEnoughLiquidity();
 
+        activeConditions++;
         lastConditionId++;
         oracleConditionIds[msg.sender][oracleCondId] = lastConditionId;
 
@@ -167,7 +145,6 @@ contract Core is OwnableUpgradeable, ICore, Math {
         external
         override
         onlyLp
-        betAllowed(conditionId)
         returns (
             uint64,
             uint128,
@@ -175,6 +152,8 @@ contract Core is OwnableUpgradeable, ICore, Math {
         )
     {
         Condition storage condition = conditions[conditionId];
+        if (allConditionsStopped || condition.state != ConditionState.CREATED)
+            revert BetNotAllowed();
         uint8 outcomeIndex = (
             outcome == conditions[conditionId].outcomes[0] ? 0 : 1
         );
@@ -199,34 +178,7 @@ contract Core is OwnableUpgradeable, ICore, Math {
         bet.odds = odds;
 
         condition.fundBank[outcomeIndex] += amount;
-
-        // calc previous maximum payout's value
-        uint128 previousMaxPayout = (
-            condition.payouts[0] > condition.payouts[1]
-                ? condition.payouts[0]
-                : condition.payouts[1]
-        );
-        // calc new payout for the outcome
         condition.payouts[outcomeIndex] += (odds * amount) / multiplier;
-        // calc maximum payout's value
-        uint128 maxPayout = (
-            condition.payouts[0] > condition.payouts[1]
-                ? condition.payouts[0]
-                : condition.payouts[1]
-        );
-
-        if (maxPayout > condition.fundBank[0] + condition.fundBank[1])
-            revert CantAcceptBet();
-
-        // update total locked payout's value
-        if (maxPayout > previousMaxPayout) {
-            uint128 deltaPayout = maxPayout - previousMaxPayout;
-            // bet's maximum payout mustn't reduce available LP reserve by more than half
-            if (deltaPayout > (LP.getReserve() - totalLockedPayout))
-                revert CantAcceptBet();
-            totalLockedPayout += deltaPayout;
-        }
-
         condition.totalNetBets[outcomeIndex] += amount;
 
         return (odds, condition.fundBank[0], condition.fundBank[1]);
@@ -255,12 +207,7 @@ contract Core is OwnableUpgradeable, ICore, Math {
 
         (success, amount) = viewPayout(tokenId);
 
-        if (success && amount > 0) {
-            currentBet.payed = true;
-            // reduce common payouts
-            totalLockedPayout -= amount;
-        }
-
+        if (success && amount > 0) currentBet.payed = true;
         return (success, amount);
     }
 
@@ -278,7 +225,8 @@ contract Core is OwnableUpgradeable, ICore, Math {
 
         Condition storage condition = conditions[conditionId];
         if (condition.timestamp == 0) revert ConditionNotExists();
-        if (block.timestamp < condition.timestamp) revert ConditionNotStarted();
+        uint64 timeOut = condition.timestamp + 1 minutes;
+        if (block.timestamp < timeOut) revert ResolveTooEarly(timeOut);
         if (condition.state != ConditionState.CREATED)
             revert ConditionAlreadyResolved();
 
@@ -286,26 +234,15 @@ contract Core is OwnableUpgradeable, ICore, Math {
 
         condition.outcomeWin = outcomeWin;
         condition.state = ConditionState.RESOLVED;
+        activeConditions--;
 
         uint8 outcomeIndex = (outcomeWin == condition.outcomes[0] ? 0 : 1);
         uint128 bettersPayout = condition.payouts[outcomeIndex];
-
-        // totalLockedPayout: exchange maxPayOut with winnerPayout
-        reduceTotalLockedPayout(condition, bettersPayout);
 
         uint128 profitReserve = (condition.fundBank[0] +
             condition.fundBank[1]) - bettersPayout;
 
         LP.addReserve(condition.reinforcement, profitReserve, condition.leaf);
-
-        // send oracle profit if it is
-        if (profitReserve >= condition.reinforcement) {
-            LP.sendOracleReward(
-                msg.sender,
-                ((profitReserve - condition.reinforcement) *
-                    LP.getOracleFee()) / LP.getFeeMultiplier()
-            );
-        }
 
         emit ConditionResolved(
             oracleCondId,
@@ -355,13 +292,10 @@ contract Core is OwnableUpgradeable, ICore, Math {
 
     /**
      * @notice  Oracle: Indicate the condition `oracleConditionId` as canceled.
-     * @param   oracleConditionId the current match or game ID in oracle's internal system
+     * @param   oracleCondId the current match or game ID in oracle's internal system
      */
-    function cancelByOracle(uint256 oracleConditionId) external onlyOracle {
-        cancel(
-            oracleConditionIds[msg.sender][oracleConditionId],
-            oracleConditionId
-        );
+    function cancelByOracle(uint256 oracleCondId) external onlyOracle {
+        cancel(oracleConditionIds[msg.sender][oracleCondId], oracleCondId);
     }
 
     /**
@@ -374,29 +308,28 @@ contract Core is OwnableUpgradeable, ICore, Math {
 
     /**
      * @notice  Indicate the condition `conditionId` with oracle ID `oracleConditionId` as canceled.
-     * @dev     Set oracleConditionId to zero if the function is not called by an oracle.
+     * @dev     Set oracleCondId to zero if the function is not called by an oracle.
      * @param   conditionId the current match or game ID
-     * @param   oracleConditionId the current match or game ID in oracle's internal system
+     * @param   oracleCondId the current match or game ID in oracle's internal system
      */
-    function cancel(uint256 conditionId, uint256 oracleConditionId) internal {
+    function cancel(uint256 conditionId, uint256 oracleCondId) internal {
         Condition storage condition = conditions[conditionId];
         if (condition.timestamp == 0) revert ConditionNotExists();
-        if (block.timestamp < condition.timestamp) revert ConditionNotStarted();
         if (
             condition.state == ConditionState.RESOLVED ||
             condition.state == ConditionState.CANCELED
         ) revert ConditionAlreadyResolved();
 
         condition.state = ConditionState.CANCELED;
+        activeConditions--;
 
-        reduceTotalLockedPayout(
-            condition,
-            condition.totalNetBets[0] + condition.totalNetBets[1]
+        LP.addReserve(
+            condition.reinforcement,
+            condition.reinforcement,
+            condition.leaf
         );
-
-        LP.addReserve(condition.reinforcement, 0, condition.leaf);
         emit ConditionResolved(
-            oracleConditionId,
+            oracleCondId,
             conditionId,
             0,
             uint8(ConditionState.CANCELED),
@@ -405,38 +338,22 @@ contract Core is OwnableUpgradeable, ICore, Math {
     }
 
     /**
-     * @dev    Reduce amount of funds locked by condition by `lockValue`.
-     * @param  condition the match or game struct
-     * @param  lockValue the value by which reduce the amount of funds locked by condition
-     */
-    function reduceTotalLockedPayout(
-        Condition storage condition,
-        uint128 lockValue
-    ) internal {
-        // if exists amount of locked payout -> release locked payout from global state
-        uint128 maxPayout = (
-            condition.payouts[0] > condition.payouts[1]
-                ? condition.payouts[0]
-                : condition.payouts[1]
-        );
-        if (maxPayout != 0) {
-            // exchange maxPayout with lockValue
-            totalLockedPayout = totalLockedPayout - maxPayout + lockValue;
-        }
-    }
-
-    /**
      * @notice Maintainer: Set `newTimestamp` as new condition `conditionId` deadline.
-     * @param  conditionId the match or game ID
+     * @param  oracleCondId the match or game ID
      * @param  newTimestamp new condition start time
      */
-    function shift(uint256 conditionId, uint64 newTimestamp)
+    function shift(uint256 oracleCondId, uint64 newTimestamp)
         external
-        onlyMaintainer
+        onlyOracle
     {
+        uint256 conditionId = oracleConditionIds[msg.sender][oracleCondId];
         if (conditions[conditionId].timestamp == 0) revert ConditionNotExists();
         conditions[conditionId].timestamp = newTimestamp;
-        emit ConditionShifted(conditionId, newTimestamp);
+        emit ConditionShifted(oracleCondId, conditionId, newTimestamp);
+    }
+
+    function claimOracleReward() external onlyOracle {
+        LP.claimOracleReward(msg.sender);
     }
 
     /**
@@ -475,6 +392,17 @@ contract Core is OwnableUpgradeable, ICore, Math {
     }
 
     /**
+     * @notice Maintainer: Change default reinforcement.
+     * @param  reinforcement new default reinforcement
+     */
+    function changeDefaultReinforcement(uint128 reinforcement)
+        external
+        onlyMaintainer
+    {
+        defaultReinforcement = reinforcement;
+    }
+
+    /**
      * @notice Get margin for outcome `outcomeId`.
      * @param  outcomeId outcome ID
      * @return margin for outcome `outcomeId` if defined or default value
@@ -498,12 +426,20 @@ contract Core is OwnableUpgradeable, ICore, Math {
     }
 
     /**
+     * @notice Maintainer: Change default margin.
+     * @param  margin new default margin
+     */
+    function changeDefaultMargin(uint128 margin) external onlyMaintainer {
+        defaultMargin = margin;
+    }
+
+    /**
      * @notice Maintainer: Indicate the status of total bet lock.
      * @param  flag if stop receiving bets or not
      */
     function stopAllConditions(bool flag) external onlyMaintainer {
-        if (allConditionStopped == flag) revert FlagAlreadySet();
-        allConditionStopped = flag;
+        if (allConditionsStopped == flag) revert FlagAlreadySet();
+        allConditionsStopped = flag;
         emit AllConditionsStopped(flag);
     }
 
@@ -516,9 +452,16 @@ contract Core is OwnableUpgradeable, ICore, Math {
         external
         onlyMaintainer
     {
-        if (stoppedCondition[conditionId] == flag) revert FlagAlreadySet();
+        Condition storage condition = conditions[conditionId];
+        // only CREATED state can be stoped
+        // only PAUSED state can be restored
+        if (
+            (condition.state != ConditionState.CREATED && flag) ||
+            (condition.state != ConditionState.PAUSED && !flag)
+        ) revert CantChangeFlag();
 
-        stoppedCondition[conditionId] = flag;
+        condition.state = flag ? ConditionState.PAUSED : ConditionState.CREATED;
+
         emit ConditionStopped(conditionId, flag);
     }
 
@@ -537,21 +480,13 @@ contract Core is OwnableUpgradeable, ICore, Math {
         Bet storage currentBet = bets[tokenId];
         Condition storage condition = conditions[currentBet.conditionId];
 
-        if (
-            !currentBet.payed &&
-            (((condition.outcomeWin == condition.outcomes[0]) &&
-                (currentBet.outcome == condition.outcomes[0])) ||
-                ((condition.outcomeWin == condition.outcomes[1]) &&
-                    (currentBet.outcome == condition.outcomes[1])))
-        ) {
-            uint128 winAmount = (currentBet.odds * currentBet.amount) /
-                multiplier;
-            return (true, winAmount);
-        }
-
-        if (!currentBet.payed && (condition.state == ConditionState.CANCELED)) {
+        if (currentBet.payed) return (false, 0);
+        if (condition.state == ConditionState.CANCELED)
             return (true, currentBet.amount);
-        }
+        if (
+            condition.state == ConditionState.RESOLVED &&
+            condition.outcomeWin == currentBet.outcome
+        ) return (true, (currentBet.odds * currentBet.amount) / multiplier);
         return (false, 0);
     }
 

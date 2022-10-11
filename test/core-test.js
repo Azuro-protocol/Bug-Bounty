@@ -9,10 +9,14 @@ const {
   tokens,
   getTokenId,
   getTokenIdOdds,
-  getConditioIdHash,
+  getConditionIdHash,
   getLPNFTToken,
   tokensDec,
   prepareStand,
+  getShiftDetails,
+  makeBetForGetTokenIdDetails,
+  makeBetGetTokenId,
+  makeBetGetTokenIdOdds,
 } = require("../utils/utils");
 const dbg = require("debug")("test:core");
 
@@ -20,6 +24,7 @@ const CONDITION_START = 13253453;
 const LIQUIDITY = tokens(2000000);
 const LIQUIDITY_PLUS_1 = tokens(2000001);
 const LIQUIDITY_ONE_TOKEN = tokens(1);
+const ONE_MINUTE = 60;
 const ONE_HOUR = 3600;
 const ONE_WEEK = 604800;
 const TWO_WEEKS = 1209600;
@@ -32,6 +37,7 @@ const FEE1PERCENT = 10000000;
 const FEE5PERCENT = 50000000;
 const FEE9PERCENT = 90000000;
 const WITHDRAW_100_PERCENT = 1000000000000;
+const TOKENS_100_MIL = tokens(100_000_000);
 
 let conditionArr = [];
 
@@ -40,26 +46,14 @@ const createCondition = async (core, oracle, condID, scopeID, pools, outcomes, t
     .connect(oracle)
     .createCondition(condID, scopeID, pools, outcomes, time, ethers.utils.formatBytes32String(ipfsHash));
 
-  let condIDHash = await getConditioIdHash(txCreate);
+  let condIDHash = await getConditionIdHash(txCreate);
   conditionArr.push([oracle, condID, condIDHash]);
   return condIDHash;
 };
 
-const makeBetGetTokenId = async (lp, user, condIDHash, betAmount, outcome, deadline, minrate) => {
-  let txBet = await lp.connect(user).bet(condIDHash, betAmount, outcome, deadline, minrate);
-  let res = await getTokenId(txBet);
-  return res;
-};
-
-const makeBetGetTokenIdOdds = async (lp, user, condIDHash, betAmount, outcome, deadline, minrate) => {
-  let txBet = await lp.connect(user).bet(condIDHash, betAmount, outcome, deadline, minrate);
-  let res = await getTokenIdOdds(txBet);
-  return { tokenId: res.tokenId, odds: res.odds };
-};
-
 describe("Core test", function () {
-  let owner, adr1, lpOwner, oracle, oracle2, maintainer;
-  let Core, core, core2, Usdt, usdt, LP, lp;
+  let owner, adr1, adr2, lpOwner, oracle, oracle2, maintainer;
+  let core, core2, wxDAI, lp, azurobet;
   let lpNFT;
 
   const reinforcement = constants.WeiPerEther.mul(20000); // 10%
@@ -70,9 +64,9 @@ describe("Core test", function () {
   const pool2 = 5000000;
 
   before(async () => {
-    [owner, adr1, lpOwner, oracle, oracle2, maintainer] = await ethers.getSigners();
+    [owner, adr1, adr2, lpOwner, oracle, oracle2, maintainer] = await ethers.getSigners();
 
-    [core, core2, usdt, lp] = await prepareStand(
+    [core, core2, wxDAI, lp, azurobet] = await prepareStand(
       ethers,
       owner,
       adr1,
@@ -133,7 +127,7 @@ describe("Core test", function () {
       1730000000,
       3000000000
     );
-    expect(a).to.equal(2787053105);
+    expect(a).to.equal(2786938440);
 
     a = await core.getOddsFromBanks(50000000, 50000000, 100000, 0 /*outcome index*/, 50000000, 1e9);
     dbg(
@@ -143,7 +137,7 @@ describe("Core test", function () {
       50000000,
       50000000
     );
-    expect(a).to.equal(1904761904);
+    expect(a).to.equal(1902955904);
 
     a = await core.getOddsFromBanks(50000000, 50000000, 25000000, 0 /*outcome index*/, 50000000, 1e9);
     dbg(
@@ -153,15 +147,98 @@ describe("Core test", function () {
       50000000,
       50000000
     );
-    expect(a).to.equal(1610952313);
+    expect(a).to.equal(1600666871);
+  });
+
+  it("Create conditions by oracle and get fee", async () => {
+    await expect(lp.claimDaoReward()).to.be.revertedWith("NoDaoReward()");
+    time = await getBlockTime(ethers);
+    condID++;
+
+    let condIDHash = await createCondition(
+      core,
+      oracle,
+      condID,
+      SCOPE_ID,
+      [pool2, pool1],
+      [OUTCOMEWIN, OUTCOMELOSE],
+      time + ONE_HOUR,
+      "ipfs"
+    );
+
+    await wxDAI.connect(adr1).transfer(adr2.address, tokens(100));
+    await wxDAI.connect(adr2).approve(lp.address, tokens(100));
+    await lp
+      .connect(adr2)
+      ["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, tokens(100), OUTCOMELOSE, time + 100, 0);
+
+    time = await getBlockTime(ethers);
+    timeShift(time + ONE_HOUR + ONE_MINUTE);
+
+    let oracleBal = await wxDAI.balanceOf(oracle.address);
+
+    await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
+    await core.connect(oracle).claimOracleReward();
+
+    let oracleBalAfter = await wxDAI.balanceOf(oracle.address);
+
+    expect(oracleBalAfter.sub(oracleBal)).to.be.equal(tokens(1));
+
+    let ownerBal = await wxDAI.balanceOf(owner.address);
+    await lp.claimDaoReward();
+    let ownerBalAfter = await wxDAI.balanceOf(owner.address);
+    expect(ownerBalAfter.sub(ownerBal)).to.be.equal(tokens(9)); // 9% of 100 tokens
+  });
+
+  it("Change fee %, create conditions by different oracles and get fee", async () => {
+    lp.connect(owner).changeOracleReward(FEEHALFPERCENT); // set 0.5%
+    lp.connect(owner).changeDaoReward(FEE5PERCENT); // set 5%
+
+    time = await getBlockTime(ethers);
+    condID++;
+
+    let condIDHash = await createCondition(
+      core,
+      oracle,
+      condID,
+      SCOPE_ID,
+      [pool2, pool1],
+      [OUTCOMEWIN, OUTCOMELOSE],
+      time + ONE_HOUR,
+      "ipfs"
+    );
+
+    await wxDAI.connect(adr1).transfer(adr2.address, tokens(100));
+    await wxDAI.connect(adr2).approve(lp.address, tokens(100));
+    await lp
+      .connect(adr2)
+      ["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, tokens(100), OUTCOMELOSE, time + 100, 0);
+
+    time = await getBlockTime(ethers);
+    timeShift(time + ONE_HOUR + ONE_MINUTE);
+
+    let oracleBal = await wxDAI.balanceOf(oracle.address);
+
+    await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
+    await core.connect(oracle).claimOracleReward();
+
+    let oracleBalAfter = await wxDAI.balanceOf(oracle.address);
+
+    expect(oracleBalAfter.sub(oracleBal)).to.be.equal(tokensDec(5, 17)); // 0.5
+
+    let ownerBal = await wxDAI.balanceOf(owner.address);
+    await lp.claimDaoReward();
+    let ownerBalAfter = await wxDAI.balanceOf(owner.address);
+    expect(ownerBalAfter.sub(ownerBal)).to.be.equal(tokens(5)); // 5% of 100 tokens
   });
 
   describe("Should go through betting extending limits", async function () {
-    let time, deadline, minrate, outcomeWin, txCreate, condIDHash;
+    let time, deadline, minrate, outcomeWin, txCreate, condIDHash, conditionResolveTime;
     let betAmount = constants.WeiPerEther.mul(100);
     beforeEach(async function () {
       // create condition
       time = await getBlockTime(ethers);
+      conditionResolveTime = time + ONE_HOUR;
       condID++;
 
       condIDHash = await createCondition(
@@ -171,12 +248,12 @@ describe("Core test", function () {
         SCOPE_ID,
         [pool2, pool1],
         [OUTCOMEWIN, OUTCOMELOSE],
-        time + ONE_HOUR,
+        conditionResolveTime,
         "ipfs"
       );
 
       /* let approveAmount = constants.WeiPerEther.mul(9999999);
-      await usdt.approve(lp.address, approveAmount); */
+      await wxDAI.approve(lp.address, approveAmount); */
     });
     it("Should except deadline outdated", async function () {
       deadline = time - 10;
@@ -194,12 +271,12 @@ describe("Core test", function () {
     });
     it("Should except BIG_DIFFERENCE extended", async function () {
       // get more liquidity
-      await usdt.mint(owner.address, tokens(200_000_000));
-      await lp.addLiquidity(tokens(100_000_000));
+      await owner.sendTransaction({ to: wxDAI.address, value: BigNumber.from(tokens(200_000_000)) });
+      await lp.addLiquidity(TOKENS_100_MIL);
       await expect(
         lp
           .connect(owner)
-          ["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, tokens(100_000_000), OUTCOMEWIN, time + 10, minrate)
+          ["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, TOKENS_100_MIL, OUTCOMEWIN, time + 10, minrate)
       ).to.be.revertedWith("BigDifference");
 
       // change MaxBanksRatio and make bet successfully
@@ -212,7 +289,7 @@ describe("Core test", function () {
         lp,
         owner,
         condIDHash,
-        tokens(100_000_000),
+        TOKENS_100_MIL,
         OUTCOMEWIN,
         time + 10,
         0,
@@ -234,6 +311,11 @@ describe("Core test", function () {
 
       // clear up reserves
       await timeShiftBy(ethers, ONE_HOUR);
+      await expect(core.connect(oracle).resolveCondition(condID, OUTCOMEWIN)).to.be.revertedWith(
+        "ResolveTooEarly(" + (conditionResolveTime + ONE_MINUTE) + ")"
+      );
+
+      await timeShiftBy(ethers, ONE_MINUTE);
       await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
       await lp.withdrawPayout(tokenId);
       // try resolve again
@@ -298,7 +380,7 @@ describe("Core test", function () {
     await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
 
     //  EVENT: first player get his payout
-    const better1OldBalance = await usdt.balanceOf(owner.address);
+    const better1OldBalance = await wxDAI.balanceOf(owner.address);
     await azurobet.setApprovalForAll(lp.address, true);
 
     // try to withdraw stake #1 (adr1 hold it now)
@@ -311,7 +393,7 @@ describe("Core test", function () {
 
     // try to withdraw stake #1 from owner - must be ok
     await lp.withdrawPayout(tokenId1);
-    const better1NewBalance = await usdt.balanceOf(owner.address);
+    const better1NewBalance = await wxDAI.balanceOf(owner.address);
 
     expect((await azurobet.balanceOf(adr1.address)).toString()).to.equal("1");
     expect((await azurobet.balanceOf(owner.address)).toString()).to.equal("1"); // no NFT burn
@@ -349,7 +431,7 @@ describe("Core test", function () {
         );
         expect(await core.getConditionReinforcement(condIDHash)).to.be.equal(await core.getReinforcement(outcomeID));
         // unresolved conditions with uncommon outcomes may cause errors in future tests
-        timeShift(time + ONE_HOUR);
+        timeShift(time + ONE_HOUR + ONE_MINUTE);
         await core.connect(oracle).resolveCondition(condID, outcomeID);
       }
     });
@@ -377,7 +459,6 @@ describe("Core test", function () {
       time = await getBlockTime(ethers);
       const newReinforcement = reinforcement.div(10);
       const newMarginality = marginality / 10;
-      condID++;
 
       await core
         .connect(maintainer)
@@ -390,7 +471,7 @@ describe("Core test", function () {
       let condIDHash = await createCondition(
         core,
         oracle,
-        condID,
+        ++condID,
         SCOPE_ID,
         [pool2, pool1],
         [OUTCOMEWIN, OUTCOMELOSE],
@@ -399,6 +480,26 @@ describe("Core test", function () {
       );
       expect(await core.getConditionReinforcement(condIDHash)).to.be.equal(newReinforcement);
       expect(await core.getMargin(OUTCOMEWIN)).to.be.equal(newMarginality);
+
+      await core.connect(maintainer).changeDefaultReinforcement(newReinforcement);
+      await core.connect(maintainer).changeDefaultMargin(newMarginality);
+
+      const outcomeCustom = 12345;
+      condIDHash = await createCondition(
+        core,
+        oracle,
+        ++condID,
+        SCOPE_ID,
+        [pool2, pool1],
+        [outcomeCustom, outcomeCustom + 1],
+        time + ONE_HOUR,
+        "ipfs"
+      );
+      expect(await core.getConditionReinforcement(condIDHash)).to.be.equal(newReinforcement);
+      expect(await core.getMargin(outcomeCustom)).to.be.equal(newMarginality);
+
+      await timeShift(time + ONE_HOUR + ONE_MINUTE);
+      await core.connect(oracle).resolveCondition(condID, outcomeCustom);
     });
   });
   describe("Check restrictions", () => {
@@ -495,7 +596,7 @@ describe("Core test", function () {
         "ipfs"
       );
 
-      await timeShift(time + ONE_HOUR);
+      await timeShift(time + ONE_HOUR + ONE_MINUTE);
       await expect(core.connect(oracle).resolveCondition(condID, OUTCOMEINCORRECT)).to.be.revertedWith("WrongOutcome");
     });
     it("Should NOT take bet with incorrect outcome stake", async () => {
@@ -572,9 +673,9 @@ describe("Core test", function () {
       // check payout
       expect((await lp.viewPayout(tokenId))[1]).to.be.equal(tokens(100));
 
-      let BalBefore = await usdt.balanceOf(adr1.address);
+      let BalBefore = await wxDAI.balanceOf(adr1.address);
       await lp.connect(adr1).withdrawPayout(tokenId);
-      expect((await usdt.balanceOf(adr1.address)).sub(BalBefore)).to.be.equal(tokens(100));
+      expect((await wxDAI.balanceOf(adr1.address)).sub(BalBefore)).to.be.equal(tokens(100));
     });
     it("Should view/return funds from canceled by maintainer condition", async () => {
       time = await getBlockTime(ethers);
@@ -608,18 +709,21 @@ describe("Core test", function () {
       let internalCondID = await core.oracleConditionIds(oracle.address, condID);
       await expect(core.connect(oracle).cancelByMaintainer(internalCondID)).to.be.revertedWith("OnlyMaintainer");
 
+      let reserveBeforeCancel = await lp.getReserve();
       await core.connect(maintainer).cancelByMaintainer(internalCondID);
       // try cancel again
       await expect(core.connect(maintainer).cancelByMaintainer(internalCondID)).to.be.revertedWith(
         "ConditionAlreadyResolved()"
       );
+      // check LP reserve not changed after canceling
+      expect(await lp.getReserve()).to.be.equal(reserveBeforeCancel);
 
       // check payout
       expect((await lp.viewPayout(tokenId))[1]).to.be.equal(tokens(100));
 
-      let BalBefore = await usdt.balanceOf(adr1.address);
+      let BalBefore = await wxDAI.balanceOf(adr1.address);
       await lp.connect(adr1).withdrawPayout(tokenId);
-      expect((await usdt.balanceOf(adr1.address)).sub(BalBefore)).to.be.equal(tokens(100));
+      expect((await wxDAI.balanceOf(adr1.address)).sub(BalBefore)).to.be.equal(tokens(100));
     });
     it("Should shift condition time (end stake)", async () => {
       time = await getBlockTime(ethers);
@@ -637,7 +741,8 @@ describe("Core test", function () {
       );
 
       // shift time to past, so condition is unavailable for staking
-      await core.connect(maintainer).shift(condIDHash, time);
+      await expect(core.connect(maintainer).shift(condID, time)).to.be.revertedWith("OnlyOracle()");
+      await core.connect(oracle).shift(condID, time);
 
       await expect(
         lp
@@ -646,122 +751,19 @@ describe("Core test", function () {
       ).to.be.revertedWith("ConditionStarted");
 
       // shift time to future, so will be staking successful
-      await core.connect(maintainer).shift(condIDHash, time + ONE_HOUR);
+      let shifDetails = await getShiftDetails(await core.connect(oracle).shift(condID, time + ONE_HOUR));
+      expect(shifDetails.oracleCondId).to.be.equal(condID);
+      expect(shifDetails.conditionId).to.be.equal(condIDHash);
+      expect(shifDetails.newTimestamp).to.be.equal(time + ONE_HOUR);
 
       let tokenId1 = await makeBetGetTokenId(lp, adr1, condIDHash, tokens(100), OUTCOMEWIN, time + 100, 0, lp.address);
 
       // bet payment
-      await timeShiftBy(ethers, ONE_HOUR);
+      await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
       await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
       await lp.connect(adr1).withdrawPayout(tokenId1);
     });
-    it("Create conditions by different oracles and get fee", async () => {
-      await lp.claimDaoReward();
-      time = await getBlockTime(ethers);
-      condID++;
 
-      let condIDHash = await createCondition(
-        core,
-        oracle,
-        condID,
-        SCOPE_ID,
-        [pool2, pool1],
-        [OUTCOMEWIN, OUTCOMELOSE],
-        time + ONE_HOUR,
-        "ipfs"
-      );
-
-      let condIDHash1 = await createCondition(
-        core,
-        oracle2,
-        condID,
-        SCOPE_ID,
-        [pool2, pool1],
-        [OUTCOMEWIN, OUTCOMELOSE],
-        time + ONE_HOUR,
-        "ipfs"
-      );
-
-      await lp["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, tokens(100), OUTCOMELOSE, time + 100, 0);
-
-      await lp["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash1, tokens(100), OUTCOMELOSE, time + 100, 0);
-
-      time = await getBlockTime(ethers);
-      timeShift(time + ONE_HOUR);
-
-      let oracleBal = await usdt.balanceOf(oracle.address);
-      let oracleBal2 = await usdt.balanceOf(oracle2.address);
-
-      await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
-      await core.connect(oracle2).resolveCondition(condID, OUTCOMEWIN);
-
-      let oracleBalAfter = await usdt.balanceOf(oracle.address);
-      let oracleBal2After = await usdt.balanceOf(oracle2.address);
-
-      expect(oracleBalAfter.sub(oracleBal)).to.be.equal(tokens(1));
-      expect(oracleBal2After.sub(oracleBal2)).to.be.equal(tokens(1));
-
-      let ownerBal = await usdt.balanceOf(owner.address);
-      await lp.claimDaoReward();
-      let ownerBalAfter = await usdt.balanceOf(owner.address);
-      expect(ownerBalAfter.sub(ownerBal)).to.be.equal(tokens(18)); // 9% of 200 tokens
-    });
-    it("Change fee %, create conditions by different oracles and get fee", async () => {
-      lp.connect(owner).changeOracleReward(FEEHALFPERCENT); // set 0.5%
-      lp.connect(owner).changeDaoReward(FEE5PERCENT); // set 5%
-
-      time = await getBlockTime(ethers);
-      condID++;
-
-      let condIDHash = await createCondition(
-        core,
-        oracle,
-        condID,
-        SCOPE_ID,
-        [pool2, pool1],
-        [OUTCOMEWIN, OUTCOMELOSE],
-        time + ONE_HOUR,
-        "ipfs"
-      );
-
-      let condIDHash1 = await createCondition(
-        core,
-        oracle2,
-        condID,
-        SCOPE_ID,
-        [pool2, pool1],
-        [OUTCOMEWIN, OUTCOMELOSE],
-        time + ONE_HOUR,
-        "ipfs"
-      );
-
-      await lp["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash, tokens(100), OUTCOMELOSE, time + 100, 0);
-
-      await lp["bet(uint256,uint128,uint64,uint64,uint64)"](condIDHash1, tokens(100), OUTCOMELOSE, time + 100, 0);
-
-      time = await getBlockTime(ethers);
-      timeShift(time + ONE_HOUR);
-
-      let oracleBal = await usdt.balanceOf(oracle.address);
-      let oracleBal2 = await usdt.balanceOf(oracle2.address);
-
-      await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
-      await core.connect(oracle2).resolveCondition(condID, OUTCOMEWIN);
-
-      let oracleBalAfter = await usdt.balanceOf(oracle.address);
-      let oracleBal2After = await usdt.balanceOf(oracle2.address);
-
-      expect(oracleBalAfter.sub(oracleBal)).to.be.equal(tokensDec(5, 17)); // 0.5
-      expect(oracleBal2After.sub(oracleBal2)).to.be.equal(tokensDec(5, 17));
-
-      let ownerBal = await usdt.balanceOf(owner.address);
-      await lp.claimDaoReward();
-      let ownerBalAfter = await usdt.balanceOf(owner.address);
-      expect(ownerBalAfter.sub(ownerBal)).to.be.equal(tokens(10)); // 9% of 200 tokens
-
-      // resolve bets
-      //await lp.connect(owner).withdrawPayout(tokenId1);
-    });
     it("Create CORE.condition/bet migrate to CORE2 make condition/bet and withdrawPayout", async () => {
       time = await getBlockTime(ethers);
       condID++;
@@ -784,10 +786,11 @@ describe("Core test", function () {
       await core2.connect(owner).setOracle(oracle.address);
       await core2.connect(owner).setOracle(maintainer.address);
       await core2.connect(owner).renounceOracle(maintainer.address);
-      // all conditions must be resolved before switch core
-      await expect(lp.changeCore(core2.address)).to.be.revertedWith("PaymentLocked");
 
-      timeShift(time + ONE_HOUR);
+      // all conditions must be resolved before switch core
+      await expect(lp.changeCore(core2.address)).to.be.revertedWith("ActiveConditions()");
+
+      timeShift(time + ONE_HOUR + ONE_MINUTE);
 
       // resolve all unresolved conditions at CORE
       for (const i of conditionArr.keys()) {
@@ -799,14 +802,14 @@ describe("Core test", function () {
         }
       }
 
-      // get prize: token1 from CORE
-      let balBefore = await usdt.balanceOf(owner.address);
-      await lp.connect(owner).withdrawPayout(tokenId1);
-      let balAfter = await usdt.balanceOf(owner.address);
-      expect(balAfter).gt(balBefore);
-
-      // change correct after all resolved CORE -> CORE2
+      // change correct after all resolved CORE -> CORE2, withdraw payouts available after change CORE
       await lp.changeCore(core2.address);
+
+      // get prize: token1 from CORE
+      let balBefore = await wxDAI.balanceOf(owner.address);
+      await lp.connect(owner).withdrawPayout(tokenId1);
+      let balAfter = await wxDAI.balanceOf(owner.address);
+      expect(balAfter).gt(balBefore);
 
       condID++;
       time = await getBlockTime(ethers);
@@ -829,14 +832,14 @@ describe("Core test", function () {
       expect(tokenId2Info.amount).to.be.equal(tokens(100));
       expect(tokenId2Info.createdAt).to.be.equal(time + 1);
 
-      timeShift(time + ONE_HOUR);
+      timeShift(time + ONE_HOUR + ONE_MINUTE);
 
       // resolve condition on CORE2
       await core2.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
 
       // get prize: token2 from CORE2
       await lp.connect(owner).withdrawPayout(tokenId2);
-      let balAfter2 = await usdt.balanceOf(owner.address);
+      let balAfter2 = await wxDAI.balanceOf(owner.address);
       expect(balAfter2).gt(balAfter);
 
       // try burn NFT (it allowed only for LP)
@@ -935,14 +938,18 @@ describe("Core test", function () {
     for (const i of condIDHashes.keys()) {
       await expect(
         makeBetGetTokenId(lp, owner, condIDHashes[i], tokens(100), OUTCOMEWIN, time + 100, 0)
-      ).to.be.revertedWith("ConditionStopped");
+      ).to.be.revertedWith("BetNotAllowed()");
     }
 
     // release all conditions
     await core.connect(maintainer).stopAllConditions(false);
 
+    // try incorrect unpause condition
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[0], false)).to.be.revertedWith("CantChangeFlag()");
     // stop only one condition (#0)
     await core.connect(maintainer).stopCondition(condIDHashes[0], true);
+    // try pause condition again
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[0], true)).to.be.revertedWith("CantChangeFlag()");
 
     // try bet all of conditions, all ok and only one will be failed (#0)
     let tokenIds = [];
@@ -950,7 +957,7 @@ describe("Core test", function () {
       if (i == 0) {
         await expect(
           makeBetGetTokenId(lp, owner, condIDHashes[i], tokens(100), OUTCOMEWIN, time + 100, 0)
-        ).to.be.revertedWith("ConditionStopped");
+        ).to.be.revertedWith("BetNotAllowed()");
       } else {
         tokenIds.push(await makeBetGetTokenId(lp, owner, condIDHashes[i], tokens(100), OUTCOMEWIN, time + 100, 0));
       }
@@ -958,12 +965,14 @@ describe("Core test", function () {
 
     // release condition (#0)
     await core.connect(maintainer).stopCondition(condIDHashes[0], false);
+    // try unpause condition again
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[0], false)).to.be.revertedWith("CantChangeFlag()");
 
     // bet on release condition (#0) is ok
     tokenIds.push(await makeBetGetTokenId(lp, owner, condIDHashes[0], tokens(100), OUTCOMEWIN, time + 100, 0));
 
     // repay bets
-    await timeShiftBy(ethers, ONE_HOUR);
+    await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
     for (const i of condIDs.keys()) {
       await core.connect(oracle).resolveCondition(condIDs[i], OUTCOMEWIN);
     }
@@ -972,7 +981,57 @@ describe("Core test", function () {
       await lp.withdrawPayout(tokenIds[i]);
     }
   });
-  it("Try to make huge bet, that can't be payed out", async () => {
+  it("Make two conditions: canceled and resolved and try to stop them", async () => {
+    time = await getBlockTime(ethers);
+
+    let condIDs = [];
+    let condIDHashes = [];
+
+    for (const i of Array(2).keys()) {
+      condID++;
+      condIDs.push(condID);
+    }
+
+    // create 2 conditions
+    for (const i of condIDs.keys()) {
+      condIDHashes.push(
+        await createCondition(
+          core,
+          oracle,
+          condIDs[i],
+          SCOPE_ID,
+          [pool2, pool1],
+          [OUTCOMEWIN, OUTCOMELOSE],
+          time + ONE_HOUR,
+          "ipfs"
+        )
+      );
+    }
+
+    await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
+    /* enum ConditionState {
+      CREATED,
+      RESOLVED,
+      CANCELED,
+      PAUSED
+    } */
+    // resolve first conditon
+    await core.connect(oracle).resolveCondition(condIDs[0], OUTCOMEWIN);
+    expect((await core.getCondition(condIDHashes[0])).state).to.be.equal(1); // RESOLVED
+
+    // cancel second condition
+    await core.connect(oracle).cancelByOracle(condIDs[1]);
+    expect((await core.getCondition(condIDHashes[1])).state).to.be.equal(2); // CANCELED
+
+    //try stop RESOLVED condition
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[0], true)).to.be.revertedWith("CantChangeFlag()");
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[0], false)).to.be.revertedWith("CantChangeFlag()");
+
+    //try stop CANCELED condition
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[1], true)).to.be.revertedWith("CantChangeFlag()");
+    await expect(core.connect(maintainer).stopCondition(condIDHashes[1], false)).to.be.revertedWith("CantChangeFlag()");
+  });
+  it("Make huge bet, and pay out", async () => {
     time = await getBlockTime(ethers);
     condID++;
 
@@ -1000,8 +1059,42 @@ describe("Core test", function () {
       )
     ).to.be.revertedWith("ConditionAlreadyCreated()");
 
-    await expect(
-      makeBetGetTokenId(lp, adr1, condIDHash, tokens(7_000_000), OUTCOMEWIN, time + 100, 0)
-    ).to.be.revertedWith("CantAcceptBet()");
+    let res = await makeBetGetTokenIdOdds(lp, adr1, condIDHash, tokens(7_000_000), OUTCOMEWIN, time + 100, 0);
+
+    time = await getBlockTime(ethers);
+    await timeShift(time + ONE_HOUR + ONE_MINUTE);
+    await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
+
+    let balBefore = await wxDAI.balanceOf(adr1.address);
+    await lp.connect(adr1).withdrawPayout(res.tokenId);
+    let balAfter = await wxDAI.balanceOf(adr1.address);
+    expect(balAfter.sub(balBefore)).to.be.gt(tokens(7_000_000));
+  });
+  it("Make bet for another bettor", async () => {
+    const stakeAmount = tokens(10);
+    time = await getBlockTime(ethers);
+    condID++;
+
+    let condIDHash = await createCondition(
+      core,
+      oracle,
+      condID,
+      SCOPE_ID,
+      [pool2, pool1],
+      [OUTCOMEWIN, OUTCOMELOSE],
+      time + ONE_HOUR,
+      "ipfs"
+    );
+
+    expect(await wxDAI.balanceOf(adr2.address)).to.be.equal(0);
+
+    // make bet for adr2
+    let res = await makeBetForGetTokenIdDetails(lp, adr1, adr2, condIDHash, stakeAmount, OUTCOMEWIN, time + 100, 0);
+    expect(res.account).to.be.equal(adr2.address);
+    expect(await azurobet.ownerOf(res.tokenId)).to.be.equal(adr2.address);
+
+    await timeShiftBy(ethers, ONE_HOUR + ONE_MINUTE);
+    await core.connect(oracle).resolveCondition(condID, OUTCOMEWIN);
+    await lp.connect(adr2).withdrawPayout(res.tokenId);
   });
 });

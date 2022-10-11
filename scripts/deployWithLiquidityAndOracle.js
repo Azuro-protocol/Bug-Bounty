@@ -1,29 +1,21 @@
-const { ethers } = require("hardhat");
+const { BigNumber } = require("@ethersproject/bignumber");
+const { ethers, upgrades } = require("hardhat");
 const hre = require("hardhat");
-const { tokens, timeout, getBlockTime } = require("../utils/utils");
+const { tokens, timeout, getBlockTime, getLPNFTTokenDetails } = require("../utils/utils");
 
 const reinforcement = tokens(20_000);
 const marginality = 50000000; // 5%
-const MAINTEINERS = ["0x0D62B886234EA4dC9bd86FaB239578DcD0075fb0", "0x628d2714F912aaB37e00304B5fF0283BE7DFf75f"];
-const ORACLES = [
-  "0x0D62B886234EA4dC9bd86FaB239578DcD0075fb0",
-  "0x2c33fEe397eEA9a3573A31a2Ea926424E35584a1",
-  "0x628d2714F912aaB37e00304B5fF0283BE7DFf75f",
-  "0x834DD1699F7ed641b8FED8A57D1ad48A9B6Adb4E",
-];
-
-let TEST_WALLET = [];
-TEST_WALLET.push(process.env.TEST_WALLET1);
-TEST_WALLET.push(process.env.TEST_WALLET2);
-TEST_WALLET.push(process.env.TEST_WALLET3);
+const ORACLES = JSON.parse(process.env.ORACLES);
+let MAINTAINERS = JSON.parse(process.env.MAINTAINERS);
+const E2E_ACCOUNT = process.env.E2E_ACCOUNT;
 
 async function main() {
   const [deployer] = await ethers.getSigners();
   const oracle = deployer;
 
-  let usdt, azurobet, lp, core, coreImpl, azurobetImpl, lpImpl;
+  let wxDAI, azurobet, lp, core, coreImplAddress, azurobetImplAddress, lpImplAddress;
 
-  console.log("Deployer wallet: ", deployer.address);
+  console.log("Deployer wallet:", deployer.address);
   console.log("Deployer balance:", (await deployer.getBalance()).toString());
 
   const chainId = await hre.network.provider.send("eth_chainId");
@@ -31,7 +23,10 @@ async function main() {
   // kovan => 8000
   // rinkeby => 20000
   // sokol => 10000 (0x4D)
-  const TIME_OUT = chainId == 0x7a69 ? 800 : chainId == 0x2a ? 8000 : chainId == 0x4d ? 10000 : 20000;
+  const TIME_OUT = chainId == 0x7a69 ? 800 : chainId == 0x2a ? 8000 : chainId == 0x4d ? 25000 : 20000;
+  if (chainId == 0x7a69 || chainId == 0x4d) {
+    MAINTAINERS.push(deployer.address);
+  }
 
   // USDT
   {
@@ -51,8 +46,10 @@ async function main() {
     await timeout(TIME_OUT);
     await azurobet.deployed();
     await timeout(TIME_OUT);
-    azurobetImpl = await upgrades.erc1967.getImplementationAddress(azurobet.address);
-    console.log("azurobetImpl deployed to:", azurobetImpl);
+    azurobetImplAddress = await upgrades.erc1967.getImplementationAddress(azurobet.address);
+    const azurobetImpl = await AzuroBet.attach(azurobetImplAddress);
+    await azurobetImpl.initialize();
+    console.log("azurobetImpl deployed to:", azurobetImplAddress);
     await timeout(TIME_OUT);
   }
 
@@ -62,8 +59,10 @@ async function main() {
     lp = await upgrades.deployProxy(LP, [usdt.address, azurobet.address]);
     await lp.deployed();
     await timeout(TIME_OUT);
-    lpImpl = await upgrades.erc1967.getImplementationAddress(lp.address);
-    console.log("lpImpl deployed to:", lpImpl);
+    lpImplAddress = await upgrades.erc1967.getImplementationAddress(lp.address);
+    const lpImpl = await LP.attach(lpImplAddress);
+    await lpImpl.initialize(usdt.address, azurobet.address);
+    console.log("lpImpl deployed to:", lpImplAddress);
     await timeout(TIME_OUT);
   }
 
@@ -73,8 +72,10 @@ async function main() {
     core = await upgrades.deployProxy(Core, [reinforcement, oracle.address, marginality]);
     await core.deployed();
     await timeout(TIME_OUT);
-    coreImpl = await upgrades.erc1967.getImplementationAddress(core.address);
-    console.log("coreImpl deployed to:", coreImpl);
+    coreImplAddress = await upgrades.erc1967.getImplementationAddress(core.address);
+    const coreImpl = await Core.attach(coreImplAddress);
+    await coreImpl.initialize(reinforcement, oracle.address, marginality);
+    console.log("coreImpl deployed to:", coreImplAddress);
     await timeout(TIME_OUT);
   }
 
@@ -95,31 +96,58 @@ async function main() {
     const approveAmount = tokens(999_999_999);
     await usdt.approve(lp.address, approveAmount);
     await timeout(TIME_OUT);
-    console.log("Approve done ", approveAmount.toString());
+    console.log("Approve done", approveAmount.toString());
 
     const liquidity = tokens(600_000_000);
-    await lp.addLiquidity(liquidity, { gasLimit: 1300000 }); // in tests max 1154635
+
+    let txAdd = await lp.addLiquidity(liquidity);
     await timeout(TIME_OUT);
-    console.log("LP tokens supply", (await lp.totalSupply()).toString());
+    let res = await getLPNFTTokenDetails(txAdd);
+    await timeout(TIME_OUT);
+    console.log("LP tokens supply", (await lp.totalSupply()).toString(), "nft", res.tokenId.toString());
+
+    if (E2E_ACCOUNT) {
+      await hre.network.provider.request({
+        method: "hardhat_impersonateAccount",
+        params: [E2E_ACCOUNT],
+      });
+      const e2eAccount = await ethers.provider.getSigner(E2E_ACCOUNT);
+
+      await deployer.sendTransaction({ to: E2E_ACCOUNT, value: ethers.utils.parseEther("10000") });
+      console.log("e2e account native token balance:", (await e2eAccount.getBalance()).toString());
+
+      await usdt.mint(E2E_ACCOUNT, tokens(800_000_000));
+      console.log("e2e account balance:", await usdt.balanceOf(E2E_ACCOUNT));
+
+      await usdt.connect(e2eAccount).approve(lp.address, approveAmount);
+      console.log("e2e account approve done", approveAmount.toString());
+    }
 
     time = await getBlockTime(ethers);
 
-    console.log("NEXT_PUBLIC_CORE = ", core.address);
-    console.log("NEXT_PUBLIC_LP = ", lp.address);
-    console.log("NEXT_PUBLIC_AZURO_BET = ", azurobet.address);
-    console.log("NEXT_PUBLIC_USDT = ", usdt.address);
+    console.log("\nSUMMARY:");
+    console.log("CORE:", core.address);
+    console.log("LP:", lp.address);
+    console.log("AZURO_BET:", azurobet.address);
+    console.log("USDT:", usdt.address);
 
-    for (const iterator of Array(3).keys()) {
-      await usdt.transfer(TEST_WALLET[iterator], tokens(10_000_000));
+    console.log(
+      "CONTRACTS FOR WEB APP:",
+      JSON.stringify({
+        core: core.address,
+        lp: lp.address,
+        azuroBet: azurobet.address,
+        token: usdt.address,
+      })
+    );
+
+    for (const iterator of MAINTAINERS.keys()) {
+      await core.addMaintainer(MAINTAINERS[iterator], true);
       await timeout(TIME_OUT);
-      console.log("10_000_000 usdt sent to %s", TEST_WALLET[iterator]);
     }
 
-    for (const iterator of MAINTEINERS.keys()) {
-      await core.addMaintainer(MAINTEINERS[iterator], true);
-      await timeout(TIME_OUT);
-    }
-    console.log("MAINTEINERS", MAINTEINERS);
+    console.log("MAINTAINERS", MAINTAINERS);
+    await timeout(TIME_OUT);
 
     for (const iterator of ORACLES.keys()) {
       await core.setOracle(ORACLES[iterator]);
@@ -131,19 +159,15 @@ async function main() {
   //verification
   if (chainId != 0x7a69) {
     await hre.run("verify:verify", {
-      address: azurobetImpl,
+      address: azurobetImplAddress,
       constructorArguments: [],
     });
     await hre.run("verify:verify", {
-      address: coreImpl,
+      address: coreImplAddress,
       constructorArguments: [],
     });
     await hre.run("verify:verify", {
-      address: lpImpl,
-      constructorArguments: [],
-    });
-    await hre.run("verify:verify", {
-      address: usdt.address,
+      address: lpImplAddress,
       constructorArguments: [],
     });
   }

@@ -16,7 +16,11 @@ interface ILP {
 
     event BetterWin(address indexed better, uint256 tokenId, uint256 amount);
     event LiquidityAdded(address indexed account, uint256 amount, uint48 leaf);
-    event LiquidityRemoved(address indexed account, uint256 amount);
+    event LiquidityRemoved(
+        address indexed account,
+        uint48 indexed leaf,
+        uint256 amount
+    );
     event LiquidityRequested(
         address indexed requestWallet,
         uint256 requestedValueLp
@@ -28,6 +32,9 @@ interface ILP {
     event PeriodChanged(uint64 newPeriod);
     event MinDepoChanged(uint128 newMinDepo);
     event WithdrawTimeoutChanged(uint64 newWithdrawTimeout);
+    event ClaimTimeoutChanged(uint64 newClaimTimeout);
+    event ReinforcementAbilityChanged(uint128 newReinforcementAbility);
+    event coreChanged(address newCore);
 
     error OnlyBetOwner();
     error OnlyCore();
@@ -35,21 +42,29 @@ interface ILP {
     error AmountMustNotBeZero();
     error AmountNotSufficient();
     error NoDaoReward();
+    error NoOracleReward();
     error NoWinNoPrize();
     error LiquidityNotOwned();
     error LiquidityIsLocked();
     error NoLiquidity();
-    error PaymentLocked();
+    error ActiveConditions();
     error WrongToken();
     error ConditionStarted();
     error NotEnoughReserves();
     error WithdrawalTimeout(uint64 waitTime);
+    error ClaimTimeout(uint64 waitTime);
 
     function changeCore(address newCore) external;
 
     function addLiquidity(uint128 amount) external;
 
+    function addLiquidityNative() external payable;
+
     function withdrawLiquidity(uint48 depNum, uint40 percent) external;
+
+    function withdrawLiquidityNative(uint48 depNum, uint40 percent) external;
+
+    function claimOracleReward(address oracle) external;
 
     function viewPayout(uint256 tokenId) external view returns (bool, uint128);
 
@@ -73,18 +88,28 @@ interface ILP {
 
     function withdrawPayout(uint256 tokenId) external;
 
-    function sendOracleReward(address oracle, uint128 amount) external;
-
-    function claimDaoReward() external;
+    function withdrawPayoutNative(uint256 tokenId) external;
 
     function getPossibilityOfReinforcement(uint128 reinforcementAmount)
         external
         view
         returns (bool);
 
-    function getOracleFee() external view returns (uint128 fee);
-
-    function getFeeMultiplier() external view returns (uint128 feeDecimals);
-
     function getLeaf() external view returns (uint48 leaf);
+
+    function betNative(
+        uint256 conditionId,
+        uint64 outcomeId,
+        uint64 deadline,
+        uint64 minOdds
+    ) external payable returns (uint256);
+
+    function betFor(
+        address bettor,
+        uint256 conditionId,
+        uint128 amount,
+        uint64 outcomeId,
+        uint64 deadline,
+        uint64 minOdds
+    ) external returns (uint256);
 }

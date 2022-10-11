@@ -6,7 +6,8 @@ interface ICore {
     enum ConditionState {
         CREATED,
         RESOLVED,
-        CANCELED
+        CANCELED,
+        PAUSED
     }
 
     struct Bet {
@@ -52,13 +53,18 @@ interface ICore {
     event OracleRenounced(address indexed oracle);
     event AllConditionsStopped(bool flag);
     event ConditionStopped(uint256 indexed conditionId, bool flag);
-    event ConditionShifted(uint256 conditionId, uint64 newTimestamp);
+    event ConditionShifted(
+        uint256 oracleCondId,
+        uint256 conditionId,
+        uint64 newTimestamp
+    );
 
     error OnlyLp();
     error OnlyMaintainer();
     error OnlyOracle();
 
     error FlagAlreadySet();
+    error CantChangeFlag();
     error IncorrectTimestamp();
     error SameOutcomes();
     error SmallBet();
@@ -69,16 +75,17 @@ interface ICore {
 
     error ConditionNotExists();
     error ConditionNotStarted();
+    error ResolveTooEarly(uint64 waitTime);
     error ConditionStarted();
     error ConditionAlreadyCreated();
     error ConditionAlreadyResolved();
-    error ConditionStopped_();
+    error BetNotAllowed();
 
     error BigDifference();
     error CantAcceptBet();
     error NotEnoughLiquidity();
 
-    function getLockedPayout() external view returns (uint256);
+    function activeConditions() external view returns (uint64);
 
     function createCondition(
         uint256 oracleConditionId,

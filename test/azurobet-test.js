@@ -8,7 +8,7 @@ const {
   tokens,
   getTokenId,
   getTokenIdOdds,
-  getConditioIdHash,
+  getConditionIdHash,
   tokensDec,
   prepareStand,
 } = require("../utils/utils");
@@ -37,7 +37,7 @@ const createCondition = async (core, oracle, condID, scopeID, pools, outcomes, t
     .connect(oracle)
     .createCondition(condID, scopeID, pools, outcomes, time, ethers.utils.formatBytes32String(ipfsHash));
 
-  let condIDHash = await getConditioIdHash(txCreate);
+  let condIDHash = await getConditionIdHash(txCreate);
   conditionArr.push([oracle, condID, condIDHash]);
   return condIDHash;
 };
@@ -56,7 +56,7 @@ const makeBetGetTokenIdOdds = async (lp, user, condIDHash, betAmount, outcome, d
 
 describe("AzuroBet test", function () {
   let owner, adr1, lpOwner, oracle, oracle2, mainteiner;
-  let Core, core, core2, Usdt, usdt, LP, lp;
+  let Core, core, core2, Usdt, wxDAI, LP, lp;
   let now;
 
   const reinforcement = constants.WeiPerEther.mul(20000); // 10%
@@ -69,7 +69,7 @@ describe("AzuroBet test", function () {
 
     now = await getBlockTime(ethers);
 
-    [core, core2, usdt, lp, azurobet] = await prepareStand(
+    [core, core2, wxDAI, lp, azurobet] = await prepareStand(
       ethers,
       owner,
       adr1,

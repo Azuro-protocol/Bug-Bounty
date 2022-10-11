@@ -120,7 +120,9 @@ contract LiquidityTree {
         push(updatedNode, begin, end, leaf, ++updateId);
 
         // remove amount (percent of amount) from leaf to it's parents
-        withdrawAmount = (treeNode[leaf].amount * percent) / DECIMALS;
+        withdrawAmount = uint128(
+            (uint256(treeNode[leaf].amount) * percent) / DECIMALS
+        );
 
         updateUp(leaf, withdrawAmount, true, ++updateId);
     }
@@ -282,6 +284,25 @@ contract LiquidityTree {
     }
 
     /**
+     * @dev remove amount from whole tree, starting from top node #1
+     * @param amount value to remove
+     */
+    function remove(uint128 amount) internal {
+        if (treeNode[1].amount >= amount) {
+            pushLazy(
+                1,
+                LIQUIDITYNODES,
+                LIQUIDITYLASTNODE,
+                LIQUIDITYNODES,
+                nextNode - 1,
+                amount,
+                true,
+                ++updateId
+            );
+        }
+    }
+
+    /**
      * @dev push changes from last "lazy update" down to leaf
      * @param node - last node from lazy update
      * @param begin - leaf search start
@@ -410,8 +431,10 @@ contract LiquidityTree {
                     );
                 uint128 sumAmounts = lAmount + rAmount;
                 if (sumAmounts == 0) return;
-                uint128 forLeftAmount = (amount *
-                    ((lAmount * DECIMALS) / sumAmounts)) / DECIMALS;
+                uint128 forLeftAmount = uint128(
+                    (amount * ((uint256(lAmount) * DECIMALS) / sumAmounts)) /
+                        DECIMALS
+                );
 
                 // l in [begin,mid] - part in left child
                 pushLazy(
